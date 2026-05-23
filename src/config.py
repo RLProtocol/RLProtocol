@@ -38,6 +38,11 @@ POLLY_VOICES = {
 }
 DEFAULT_VOICE = "Polly.Aria-Neural"
 
+# OpenAI Realtime SIP/WebRTC voice path. This is separate from Twilio Polly;
+# enable per-agent with voice_provider='openai_realtime'.
+OPENAI_REALTIME_MODEL = os.environ.get("OPENAI_REALTIME_MODEL", "gpt-realtime")
+OPENAI_REALTIME_VOICE = os.environ.get("OPENAI_REALTIME_VOICE", "marin")
+
 # Max agents per tier
 TIER_MAX_AGENTS = {
     "free": 1,
