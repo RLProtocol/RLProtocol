@@ -32,6 +32,9 @@ def init_db():
     );
     """)
     db_exec("ALTER TABLE agents ADD COLUMN IF NOT EXISTS voice TEXT NOT NULL DEFAULT 'Polly.Aria-Neural';")
+    db_exec("ALTER TABLE agents ADD COLUMN IF NOT EXISTS voice_provider TEXT NOT NULL DEFAULT 'twilio_polly';")
+    db_exec("ALTER TABLE agents ADD COLUMN IF NOT EXISTS realtime_model TEXT DEFAULT 'gpt-realtime';")
+    db_exec("ALTER TABLE agents ADD COLUMN IF NOT EXISTS realtime_voice TEXT DEFAULT 'marin';")
     db_exec("ALTER TABLE agents ADD COLUMN IF NOT EXISTS webhook_push_url TEXT;")
 
     # Phone Numbers — dedicated or shared pool

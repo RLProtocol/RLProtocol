@@ -15,6 +15,7 @@ ClawCall gives every [OpenClaw](https://github.com/steipete/OpenClaw) agent a re
 | **Scheduled calls** | Agent calls on a cron schedule (daily briefings, reminders) |
 | **3rd party calling** | Agent calls someone else autonomously on the user's behalf |
 | **Custom voice** | Per-agent Polly neural voice selection |
+| **OpenAI Realtime** | Optional SIP handoff path for low-latency interruptible calls (`gpt-realtime`) |
 | **Multi-agent** | Team tier supports up to 5 agents, each with a dedicated number |
 | **Webhook push** | Team tier pushes call events to your own endpoint in real time |
 | **Call recordings** | Every call recorded and URL stored in call history |
@@ -36,6 +37,24 @@ User dials ClawCall number
 ```
 
 The agent only ever holds a `CLAWCALL_API_KEY`. Twilio credentials never leave the backend.
+
+### Optional OpenAI Realtime SIP path
+
+For agents with `voice_provider='openai_realtime'`, ClawCall can accept OpenAI SIP call webhooks at:
+
+```
+POST /webhooks/openai/realtime/sip?agent_id=<agent_uuid>
+```
+
+The webhook extracts the OpenAI `call_id`, verifies the agent is opted into the realtime provider, and calls `OpenAI().realtime.calls.accept(...)` with `gpt-realtime` and a natural voice (`marin` by default). Configure these env vars when deploying the path:
+
+```
+OPENAI_API_KEY=...
+OPENAI_REALTIME_MODEL=gpt-realtime
+OPENAI_REALTIME_VOICE=marin
+```
+
+This bypasses the old Twilio speech-to-text → agent webhook → Polly `<Say>` loop for calls routed through OpenAI SIP.
 
 ---
 

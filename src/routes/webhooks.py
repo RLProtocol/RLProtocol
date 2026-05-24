@@ -17,18 +17,24 @@ Call flow (inbound):
      → if no:  return filler + <Redirect> back to self
 """
 import json
+import os
 import random
 import threading
 import logging
 import urllib.parse
 
-from flask import Blueprint, request, Response
+from flask import Blueprint, request, Response, jsonify
 from twilio.twiml.voice_response import VoiceResponse, Gather
 
 from src.db.client import db_exec
 from src.services import bridge
 from src.services.bridge import append_transcript, get_transcript, clear_transcript
 from src.services.minutes import within_limit, add_seconds
+from src.services.openai_realtime import (
+    accept_sip_call,
+    agent_uses_openai_realtime,
+    extract_call_id,
+)
 from src.config import TWILIO_WEBHOOK_BASE_URL, FILLER_PHRASES, DEFAULT_VOICE
 
 logger = logging.getLogger(__name__)
@@ -98,6 +104,93 @@ def _push_call_event(push_url: str, event: dict):
         except Exception as e:
             logger.warning(f"Webhook push to {push_url} failed: {e}")
     threading.Thread(target=worker, daemon=True).start()
+
+
+def _realtime_instructions(agent: dict) -> str:
+    """Build system instructions for an OpenAI Realtime phone session."""
+    name = (agent.get("name") or "ClawCall agent").strip()
+    webhook_url = (agent.get("webhook_url") or "").strip()
+    return (
+        f"You are {name}, a voice assistant handling a live phone call through ClawCall. "
+        "Speak naturally, keep turns short, and let the caller interrupt you. "
+        "If the caller asks for something you cannot verify, say so plainly instead of guessing. "
+        "End the call politely when the task is complete. "
+        f"Agent webhook URL for context: {webhook_url}"
+    )
+
+
+def _local_realtime_agent(agent_id: str) -> dict | None:
+    """Return a local dev realtime agent when DATABASE_URL is unavailable.
+
+    This lets operators run the PR from a laptop/tunnel for SIP smoke tests
+    without access to ClawCall's production database.
+    """
+    local_id = os.environ.get("OPENAI_REALTIME_LOCAL_AGENT_ID", "").strip()
+    if not local_id or agent_id != local_id:
+        return None
+    return {
+        "id": local_id,
+        "name": os.environ.get("OPENAI_REALTIME_LOCAL_AGENT_NAME", "Local ClawCall agent"),
+        "webhook_url": os.environ.get("OPENAI_REALTIME_LOCAL_WEBHOOK_URL", ""),
+        "voice_provider": "openai_realtime",
+        "realtime_model": os.environ.get("OPENAI_REALTIME_MODEL", "gpt-realtime"),
+        "realtime_voice": os.environ.get("OPENAI_REALTIME_VOICE", "marin"),
+    }
+
+
+def _load_realtime_agent(agent_id: str) -> dict | None:
+    try:
+        return db_exec("SELECT * FROM agents WHERE id=%s", (agent_id,), fetchone=True)
+    except RuntimeError as exc:
+        if "DATABASE_URL" not in str(exc):
+            raise
+        return _local_realtime_agent(agent_id)
+
+
+@webhooks_bp.route("/webhooks/openai/realtime/sip", methods=["POST", "GET"])
+def openai_realtime_sip():
+    """Accept an incoming OpenAI SIP call and attach a Realtime session.
+
+    OpenAI calls this webhook for inbound SIP calls. The route looks up the
+    ClawCall agent, confirms it is opted into the realtime provider, then calls
+    `client.realtime.calls.accept(...)` with ClawCall-specific instructions.
+    """
+    payload = request.get_json(silent=True) or {}
+    if not payload:
+        payload = request.values.to_dict(flat=True)
+
+    if request.method == "GET":
+        return jsonify({
+            "ok": True,
+            "route": "openai_realtime_sip",
+            "agent_id": request.args.get("agent_id"),
+            "message": "Webhook is alive. SIP providers must POST a call_id here; browser GETs do not start calls.",
+        })
+
+    call_id = extract_call_id(payload) or request.values.get("call_id")
+    if not call_id:
+        return jsonify({"ok": False, "error": "call_id is required"}), 400
+
+    agent_id = request.args.get("agent_id") or payload.get("agent_id")
+    data = payload.get("data")
+    if not agent_id and isinstance(data, dict):
+        agent_id = data.get("agent_id")
+    if not agent_id:
+        return jsonify({"ok": False, "error": "agent_id is required"}), 400
+
+    agent = _load_realtime_agent(str(agent_id))
+    if not agent:
+        return jsonify({"ok": False, "error": "agent not found"}), 404
+    if not agent_uses_openai_realtime(agent):
+        return jsonify({"ok": False, "error": "agent is not configured for OpenAI Realtime"}), 409
+
+    accept_sip_call(
+        str(call_id),
+        instructions=_realtime_instructions(agent),
+        model=agent.get("realtime_model"),
+        voice=agent.get("realtime_voice"),
+    )
+    return ("", 204)
 
 
 # ---------------------------------------------------------------------------
